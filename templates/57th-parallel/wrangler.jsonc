@@ -1,0 +1,50 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "emdash",
+	"main": "./src/worker.ts",
+	"compatibility_date": "2026-02-24",
+	"compatibility_flags": ["nodejs_compat"],
+	"workers_dev": true,
+	// Custom domain — suhail.ski (57th Parallel)
+	"routes": [
+		{
+			"pattern": "suhail.ski",
+			"zone_name": "suhail.ski",
+			"custom_domain": true,
+		},
+	],
+	// D1 Database binding — shared with the deployed emdash instance
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "emdash-db",
+			"database_id": "d0f4cb40-484c-4a6e-8ebd-18a8416cdaae",
+			"remote": true,
+		},
+	],
+	// R2 bucket for media storage
+	"r2_buckets": [
+		{
+			"binding": "MEDIA",
+			"bucket_name": "emdash-media",
+			"remote": true,
+		},
+	],
+	// KV namespace for sessions (auto-provisioned on first deploy, pinned here)
+	"kv_namespaces": [
+		{
+			"binding": "SESSION",
+			"id": "bf237c83b2a54f7fa44f618bb00f09fe",
+		},
+	],
+	// Observability
+	"observability": {
+		"enabled": true,
+	},
+	// Worker Loader for plugin sandboxing
+	"worker_loaders": [
+		{
+			"binding": "LOADER",
+		},
+	],
+}
