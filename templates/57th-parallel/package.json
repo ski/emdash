@@ -33,6 +33,9 @@
 		"onlyBuiltDependencies": [
 			"esbuild",
 			"workerd"
-		]
+		],
+		"overrides": {
+			"picomatch": "^2.3.1"
+		}
 	}
 }

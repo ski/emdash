@@ -6,7 +6,7 @@
 
 import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { routeArtifactName } from "./route-naming.js";
 
@@ -28,13 +28,16 @@ function resolveRoute(route: string): string {
 	const specifier = isAstro ? route : routeArtifactName(route.replace(TS_EXT, ""));
 
 	try {
-		// Try to resolve as package export
-		return require.resolve(`emdash/routes/${specifier}`);
+		// Try to resolve as package export.
+		// Wrap in pathToFileURL so Astro 6 receives a file:// URL rather
+		// than a bare Windows path (fileURLToPath throws on non-file URLs).
+		return pathToFileURL(require.resolve(`emdash/routes/${specifier}`)).href;
 	} catch {
 		// Fallback for development (e.g. dist not yet built).
-		return isAstro
+		const absPath = isAstro
 			? resolve(__dirname, "../routes", route)
 			: resolve(__dirname, "../routes", `${specifier}.mjs`);
+		return pathToFileURL(absPath).href;
 	}
 }
 
