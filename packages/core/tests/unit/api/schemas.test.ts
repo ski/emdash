@@ -3,6 +3,8 @@ import { describe, it, expect } from "vitest";
 import {
 	contentCreateBody,
 	contentUpdateBody,
+	createFieldBody,
+	updateFieldBody,
 	httpUrl,
 	mediaUploadUrlBody,
 	DEFAULT_MAX_UPLOAD_SIZE,
@@ -25,6 +27,38 @@ describe("contentCreateBody schema", () => {
 
 	it("rejects status 'scheduled'", () => {
 		expect(() => contentCreateBody.parse({ data: { title: "Hi" }, status: "scheduled" })).toThrow();
+	});
+
+	it("preserves publishedAt and createdAt when valid ISO 8601 datetimes are provided", () => {
+		const result = contentCreateBody.parse({
+			data: { title: "Hi" },
+			publishedAt: "2019-03-15T10:30:00.000Z",
+			createdAt: "2019-03-15T10:30:00.000Z",
+		});
+		expect(result.publishedAt).toBe("2019-03-15T10:30:00.000Z");
+		expect(result.createdAt).toBe("2019-03-15T10:30:00.000Z");
+	});
+
+	it("accepts offset-suffixed ISO datetimes", () => {
+		const result = contentCreateBody.parse({
+			data: { title: "Hi" },
+			publishedAt: "2019-03-15T10:30:00+00:00",
+		});
+		expect(result.publishedAt).toBe("2019-03-15T10:30:00+00:00");
+	});
+
+	it("rejects malformed datetime strings", () => {
+		expect(() =>
+			contentCreateBody.parse({ data: { title: "Hi" }, publishedAt: "yesterday" }),
+		).toThrow();
+		expect(() =>
+			contentCreateBody.parse({ data: { title: "Hi" }, createdAt: "2019-03-15" }),
+		).toThrow();
+	});
+
+	it("accepts null to explicitly clear the field", () => {
+		const result = contentCreateBody.parse({ data: { title: "Hi" }, publishedAt: null });
+		expect(result.publishedAt).toBeNull();
 	});
 });
 
@@ -63,6 +97,28 @@ describe("contentUpdateBody schema", () => {
 	it("rejects status 'scheduled'", () => {
 		expect(() => contentUpdateBody.parse({ data: { title: "Hi" }, status: "scheduled" })).toThrow();
 	});
+
+	it("preserves publishedAt when a valid ISO 8601 datetime is provided", () => {
+		const result = contentUpdateBody.parse({
+			data: { title: "Hi" },
+			publishedAt: "2019-03-15T10:30:00.000Z",
+		});
+		expect(result.publishedAt).toBe("2019-03-15T10:30:00.000Z");
+	});
+
+	it("rejects malformed publishedAt strings", () => {
+		expect(() =>
+			contentUpdateBody.parse({ data: { title: "Hi" }, publishedAt: "yesterday" }),
+		).toThrow();
+	});
+
+	it("strips createdAt — treat created_at as immutable on update", () => {
+		const result = contentUpdateBody.parse({
+			data: { title: "Hi" },
+			createdAt: "2019-03-15T10:30:00.000Z",
+		} as Parameters<typeof contentUpdateBody.parse>[0]);
+		expect("createdAt" in result).toBe(false);
+	});
 });
 
 describe("httpUrl validator", () => {
@@ -96,6 +152,26 @@ describe("httpUrl validator", () => {
 
 	it("is case-insensitive for scheme", () => {
 		expect(httpUrl.parse("HTTPS://EXAMPLE.COM")).toBe("HTTPS://EXAMPLE.COM");
+	});
+});
+
+describe("createFieldBody / updateFieldBody — allowedMimeTypes", () => {
+	it("preserves allowedMimeTypes through createFieldBody parse", () => {
+		const result = createFieldBody.parse({
+			slug: "attachment",
+			label: "Attachment",
+			type: "file",
+			validation: { allowedMimeTypes: ["application/pdf"] },
+		});
+		expect(result.validation?.allowedMimeTypes).toEqual(["application/pdf"]);
+	});
+
+	it("preserves allowedMimeTypes through updateFieldBody parse", () => {
+		const result = updateFieldBody.parse({
+			label: "Attachment",
+			validation: { allowedMimeTypes: ["font/", "application/font-woff"] },
+		});
+		expect(result.validation?.allowedMimeTypes).toEqual(["font/", "application/font-woff"]);
 	});
 });
 

@@ -25,7 +25,7 @@ import { fetchCommentCounts } from "../lib/api/comments";
 import { useCurrentUser } from "../lib/api/current-user";
 import { usePluginAdmins } from "../lib/plugin-context";
 import { cn } from "../lib/utils";
-import { LogoIcon } from "./Logo.js";
+import { BrandIcon } from "./Logo.js";
 
 // Re-export for Shell.tsx and Header.tsx
 export { KumoSidebar as Sidebar, useSidebar };
@@ -59,6 +59,14 @@ export interface SidebarNavProps {
 		version?: string;
 		commit?: string;
 		marketplace?: string;
+		registry?: {
+			aggregatorUrl: string;
+		};
+		admin?: {
+			logo?: string;
+			siteName?: string;
+			favicon?: string;
+		};
 	};
 }
 
@@ -207,16 +215,29 @@ export function SidebarNav({ manifest }: SidebarNavProps) {
 		{ to: "/plugins-manager", label: t`Plugins`, icon: PuzzlePiece, minRole: ROLE_ADMIN },
 	];
 
+	if (manifest.registry) {
+		adminItems.push({
+			to: "/plugins/marketplace",
+			label: t`Registry`,
+			icon: Storefront,
+			minRole: ROLE_ADMIN,
+		});
+	} else if (manifest.marketplace) {
+		adminItems.push({
+			to: "/plugins/marketplace",
+			label: t`Marketplace`,
+			icon: Storefront,
+			minRole: ROLE_ADMIN,
+		});
+	}
+
 	if (manifest.marketplace) {
-		adminItems.push(
-			{
-				to: "/plugins/marketplace",
-				label: t`Marketplace`,
-				icon: Storefront,
-				minRole: ROLE_ADMIN,
-			},
-			{ to: "/themes/marketplace", label: t`Themes`, icon: Palette, minRole: ROLE_ADMIN },
-		);
+		adminItems.push({
+			to: "/themes/marketplace",
+			label: t`Themes`,
+			icon: Palette,
+			minRole: ROLE_ADMIN,
+		});
 	}
 
 	adminItems.push(
@@ -376,8 +397,15 @@ export function SidebarNav({ manifest }: SidebarNavProps) {
 						to="/"
 						className="emdash-brand-link flex w-full min-w-0 items-center gap-2 px-3 py-1"
 					>
-						<LogoIcon className="size-5 shrink-0" aria-hidden="true" />
-						<span className="emdash-brand-text font-semibold truncate">EmDash</span>
+						<BrandIcon
+							logoUrl={manifest.admin?.logo}
+							siteName={manifest.admin?.siteName}
+							className="size-5 shrink-0"
+							aria-hidden="true"
+						/>
+						<span className="emdash-brand-text font-semibold truncate">
+							{manifest.admin?.siteName || "EmDash"}
+						</span>
 					</Link>
 				</KumoSidebar.Header>
 
@@ -397,7 +425,7 @@ export function SidebarNav({ manifest }: SidebarNavProps) {
 					{/* Content — collections + media (collapsible) */}
 					{visibleContent.length > 1 && (
 						<KumoSidebar.Group collapsible defaultOpen>
-							<KumoSidebar.GroupLabel className="[&>span]:text-start">{t`Content`}</KumoSidebar.GroupLabel>
+							<KumoSidebar.GroupLabel className="[&>span]:text-start [&_svg]:rtl:-scale-x-100 [&_svg]:rtl:-scale-y-100">{t`Content`}</KumoSidebar.GroupLabel>
 							<KumoSidebar.GroupContent>
 								<KumoSidebar.Menu>
 									{renderNavItems(visibleContent.filter((i) => i.to !== "/"))}
@@ -411,7 +439,7 @@ export function SidebarNav({ manifest }: SidebarNavProps) {
 					{/* Manage — comments, menus, taxonomies, etc. (collapsible) */}
 					{visibleManage.length > 0 && (
 						<KumoSidebar.Group collapsible defaultOpen>
-							<KumoSidebar.GroupLabel className="[&>span]:text-start">{t`Manage`}</KumoSidebar.GroupLabel>
+							<KumoSidebar.GroupLabel className="[&>span]:text-start [&_svg]:rtl:-scale-x-100 [&_svg]:rtl:-scale-y-100">{t`Manage`}</KumoSidebar.GroupLabel>
 							<KumoSidebar.GroupContent>
 								<KumoSidebar.Menu>{renderNavItems(visibleManage)}</KumoSidebar.Menu>
 							</KumoSidebar.GroupContent>
@@ -423,7 +451,7 @@ export function SidebarNav({ manifest }: SidebarNavProps) {
 					{/* Admin — content types, users, plugins, import (collapsible) */}
 					{visibleAdmin.length > 0 && (
 						<KumoSidebar.Group collapsible defaultOpen>
-							<KumoSidebar.GroupLabel className="[&>span]:text-start">{t`Admin`}</KumoSidebar.GroupLabel>
+							<KumoSidebar.GroupLabel className="[&>span]:text-start [&_svg]:rtl:-scale-x-100 [&_svg]:rtl:-scale-y-100">{t`Admin`}</KumoSidebar.GroupLabel>
 							<KumoSidebar.GroupContent>
 								<KumoSidebar.Menu>{renderNavItems(visibleAdmin)}</KumoSidebar.Menu>
 							</KumoSidebar.GroupContent>
@@ -435,7 +463,7 @@ export function SidebarNav({ manifest }: SidebarNavProps) {
 						<>
 							<KumoSidebar.Separator />
 							<KumoSidebar.Group collapsible defaultOpen>
-								<KumoSidebar.GroupLabel className="[&>span]:text-start">{t`Plugins`}</KumoSidebar.GroupLabel>
+								<KumoSidebar.GroupLabel className="[&>span]:text-start [&_svg]:rtl:-scale-x-100 [&_svg]:rtl:-scale-y-100">{t`Plugins`}</KumoSidebar.GroupLabel>
 								<KumoSidebar.GroupContent>
 									<KumoSidebar.Menu>{renderNavItems(visiblePlugins)}</KumoSidebar.Menu>
 								</KumoSidebar.GroupContent>
@@ -446,7 +474,7 @@ export function SidebarNav({ manifest }: SidebarNavProps) {
 
 				<KumoSidebar.Footer>
 					<p className="emdash-nav-label px-3 py-2 text-[11px] text-white/30">
-						EmDash CMS v{manifest.version || "0.0.0"}
+						{manifest.admin?.siteName || "EmDash CMS"} v{manifest.version || "0.0.0"}
 						{manifest.commit && ` (${manifest.commit})`}
 					</p>
 				</KumoSidebar.Footer>
