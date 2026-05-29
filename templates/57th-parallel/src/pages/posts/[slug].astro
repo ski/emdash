@@ -7,6 +7,7 @@ import {
 	decodeSlug,
 	getSiteSettings,
 } from "emdash";
+import { getDb } from "emdash/runtime";
 import { Image, PortableText, WidgetArea } from "emdash/ui";
 import Base from "../../layouts/Base.astro";
 import PostCard from "../../components/PostCard.astro";
@@ -50,6 +51,33 @@ function getImageUrl(img: unknown): string | undefined {
 }
 const featuredImageUrl = getImageUrl(post.data.featured_image);
 const { siteTitle } = resolveBlogSiteIdentity(await getSiteSettings());
+
+// Hydrate SEO data from _emdash_seo table directly via getDb().
+// On the anonymous fast path, locals.emdash only has the lightweight
+// page-metadata subset (no handleContentGet), so we query the SEO table
+// directly using the same ALS-backed D1 instance that getEmDashEntry uses.
+try {
+	const postId = post.data.id as string;
+	const db = await getDb();
+	const row = await db
+		.selectFrom("_emdash_seo")
+		.select(["seo_title", "seo_description", "seo_image", "seo_canonical", "seo_no_index"])
+		.where("collection", "=", "posts")
+		.where("content_id", "=", postId)
+		.executeTakeFirst();
+	if (row && (row.seo_title || row.seo_description)) {
+		(post.data as Record<string, unknown>).seo = {
+			title: row.seo_title ?? null,
+			description: row.seo_description ?? null,
+			image: row.seo_image ?? null,
+			canonical: row.seo_canonical ?? null,
+			noIndex: row.seo_no_index === 1,
+		};
+	}
+} catch (seoErr) {
+	// Non-fatal — fall back to title/excerpt if DB unavailable
+	console.error("[seo-hydrate]", String(seoErr).slice(0, 200));
+}
 
 // Generate SEO meta from content
 const seo = getSeoMeta(post, {
