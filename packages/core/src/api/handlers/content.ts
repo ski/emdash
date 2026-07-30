@@ -5,6 +5,7 @@
 import type { Kysely } from "kysely";
 import { sql } from "kysely";
 
+import { isSqlite } from "../../database/dialect-helpers.js";
 import { BylineRepository } from "../../database/repositories/byline.js";
 import type { ContentBylineInput } from "../../database/repositories/byline.js";
 import { CommentRepository } from "../../database/repositories/comment.js";
@@ -12,6 +13,7 @@ import { ContentRepository } from "../../database/repositories/content.js";
 import { RedirectRepository } from "../../database/repositories/redirect.js";
 import { RevisionRepository } from "../../database/repositories/revision.js";
 import { SeoRepository } from "../../database/repositories/seo.js";
+import { TaxonomyRepository } from "../../database/repositories/taxonomy.js";
 import {
 	EmDashValidationError,
 	ScheduledNotDueError,
@@ -28,9 +30,11 @@ import { UserRepository } from "../../database/repositories/user.js";
 import { withTransaction } from "../../database/transaction.js";
 import type { Database } from "../../database/types.js";
 import { validateIdentifier } from "../../database/validate.js";
-import { getI18nConfig, isI18nEnabled } from "../../i18n/config.js";
+import { getI18nConfig, isI18nEnabled, resolveConfiguredLocale } from "../../i18n/config.js";
 import { invalidateRedirectCache } from "../../redirects/cache.js";
-import { isMissingTableError } from "../../utils/db-errors.js";
+import { FTSManager } from "../../search/fts-manager.js";
+import { invalidateTermCache } from "../../taxonomies/index.js";
+import { isMissingColumnError, isMissingTableError } from "../../utils/db-errors.js";
 import { encodeRev, validateRev } from "../rev.js";
 import type { ApiResult, ContentListResponse, ContentResponse } from "../types.js";
 import { validateMediaFields } from "./validate-media-fields.js";
@@ -265,7 +269,11 @@ async function resolveId(
 	identifier: string,
 	locale?: string,
 ): Promise<string | null> {
-	const item = await repo.findByIdOrSlug(collection, identifier, locale);
+	const item = await repo.findByIdOrSlug(
+		collection,
+		identifier,
+		locale ? resolveConfiguredLocale(locale) : undefined,
+	);
 	return item?.id ?? null;
 }
 
@@ -279,7 +287,11 @@ async function resolveIdIncludingTrashed(
 	identifier: string,
 	locale?: string,
 ): Promise<string | null> {
-	const item = await repo.findByIdOrSlugIncludingTrashed(collection, identifier, locale);
+	const item = await repo.findByIdOrSlugIncludingTrashed(
+		collection,
+		identifier,
+		locale ? resolveConfiguredLocale(locale) : undefined,
+	);
 	return item?.id ?? null;
 }
 
@@ -325,6 +337,30 @@ async function resolveSearchColumns(db: Kysely<Database>, collection: string): P
 		if (fieldSlugs.has(candidate)) columns.push(candidate);
 	}
 	return columns;
+}
+
+/**
+ * Decide whether the content-list `q` filter can be served from the
+ * collection's FTS5 index instead of a full-scan substring LIKE (#1517).
+ *
+ * Requires SQLite (FTS5 is SQLite-only), search enabled on the collection,
+ * every non-slug display column present in the searchable-field set (or the
+ * index would miss matches the LIKE finds), and the index table actually
+ * existing.
+ */
+async function canUseFtsForListFilter(
+	db: Kysely<Database>,
+	collection: string,
+	searchColumns: string[],
+): Promise<boolean> {
+	if (!isSqlite(db)) return false;
+	const ftsManager = new FTSManager(db);
+	const config = await ftsManager.getSearchConfig(collection);
+	if (!config?.enabled) return false;
+	const searchable = new Set(await ftsManager.getSearchableFields(collection));
+	const covered = searchColumns.every((col) => col === "slug" || searchable.has(col));
+	if (!covered) return false;
+	return ftsManager.ftsTableExists(collection);
 }
 
 /**
@@ -399,7 +435,7 @@ export async function handleContentList(
 		const repo = new ContentRepository(db);
 		const where: FindManyOptions["where"] = {};
 		if (params.status) where.status = params.status;
-		if (params.locale) where.locale = params.locale;
+		if (params.locale) where.locale = resolveConfiguredLocale(params.locale);
 		if (params.authorId) where.authorId = params.authorId;
 
 		// A date range requires a target column; ignore stray from/to without
@@ -416,6 +452,7 @@ export async function handleContentList(
 		if (q) {
 			where.q = q;
 			where.searchColumns = await resolveSearchColumns(db, collection);
+			where.useFts = await canUseFtsForListFilter(db, collection, where.searchColumns);
 		}
 
 		const result = await repo.findMany(collection, {
@@ -453,6 +490,15 @@ export async function handleContentList(
 				error: {
 					code: "COLLECTION_NOT_FOUND",
 					message: `Collection '${collection}' not found`,
+				},
+			};
+		}
+		if (isMissingColumnError(error, "deleted_at")) {
+			return {
+				success: false,
+				error: {
+					code: "COLLECTION_SCHEMA_MISMATCH",
+					message: `Collection '${collection}' backing table is missing the 'deleted_at' column`,
 				},
 			};
 		}
@@ -541,7 +587,11 @@ export async function handleContentGet(
 ): Promise<ApiResult<ContentResponse>> {
 	try {
 		const repo = new ContentRepository(db);
-		const item = await repo.findByIdOrSlug(collection, id, locale);
+		const item = await repo.findByIdOrSlug(
+			collection,
+			id,
+			locale ? resolveConfiguredLocale(locale) : undefined,
+		);
 
 		if (!item) {
 			return {
@@ -586,7 +636,11 @@ export async function handleContentGetIncludingTrashed(
 ): Promise<ApiResult<ContentResponse>> {
 	try {
 		const repo = new ContentRepository(db);
-		const item = await repo.findByIdOrSlugIncludingTrashed(collection, id, locale);
+		const item = await repo.findByIdOrSlugIncludingTrashed(
+			collection,
+			id,
+			locale ? resolveConfiguredLocale(locale) : undefined,
+		);
 
 		if (!item) {
 			return {
@@ -638,6 +692,7 @@ export async function handleContentCreate(
 		locale?: string;
 		translationOf?: string;
 		seo?: ContentSeoInput;
+		taxonomies?: Record<string, string[]>;
 		createdAt?: string | null;
 		publishedAt?: string | null;
 	},
@@ -667,7 +722,9 @@ export async function handleContentCreate(
 			// Default to the configured site locale rather than the repo's
 			// hard-coded "en" — otherwise non-English default-locale sites
 			// silently create entries in a locale the editor never chose.
-			const effectiveLocale = body.locale ?? getI18nConfig()?.defaultLocale;
+			const effectiveLocale = body.locale
+				? resolveConfiguredLocale(body.locale)
+				: getI18nConfig()?.defaultLocale;
 
 			let slug: string | null | undefined = body.slug;
 			if (!slug) {
@@ -712,7 +769,6 @@ export async function handleContentCreate(
 			// when the target already has credits, but the cleaner guard
 			// is to skip the call entirely.
 			if (body.translationOf) {
-				const { TaxonomyRepository } = await import("../../database/repositories/taxonomy.js");
 				const taxRepo = new TaxonomyRepository(trx);
 				await taxRepo.copyEntryTerms(collection, body.translationOf, created.id);
 
@@ -735,6 +791,18 @@ export async function handleContentCreate(
 			} else if (hasSeo) {
 				// Assign defaults in-memory — no DB round-trip needed
 				created.seo = { ...SEO_DEFAULTS };
+			}
+
+			// Attach taxonomy terms in the same transaction. The MCP tool
+			// (and the REST create body) previously accepted a `taxonomies`
+			// field on `content_create` without doing anything with it, so
+			// agents publishing a categorized/tagged entry had to make N
+			// follow-up REST calls per taxonomy. This resolves each slug in
+			// the entry's locale and pipes it through the same
+			// `setTermsForEntry` path the `.../terms/{taxonomy}` REST route
+			// uses, so the two entry points can't drift.
+			if (body.taxonomies) {
+				await assignTaxonomies(trx, collection, created.id, effectiveLocale, body.taxonomies);
 			}
 
 			return created;
@@ -816,6 +884,7 @@ export async function handleContentUpdate(
 		locale?: string;
 		_rev?: string;
 		seo?: ContentSeoInput;
+		taxonomies?: Record<string, string[]>;
 		publishedAt?: string | null;
 	},
 ): Promise<ApiResult<ContentResponse>> {
@@ -921,6 +990,20 @@ export async function handleContentUpdate(
 			}
 
 			await hydrateBylines(trx, collection, updated);
+
+			// Replace taxonomy assignments in the same transaction. Uses the
+			// entry's own locale (post-update) to resolve slugs so an update
+			// that also changes locale still lands on the correct term
+			// variants. See handleContentCreate for rationale.
+			if (body.taxonomies) {
+				await assignTaxonomies(
+					trx,
+					collection,
+					resolvedId,
+					updated.locale ?? body.locale,
+					body.taxonomies,
+				);
+			}
 
 			return updated;
 		});
@@ -1062,15 +1145,18 @@ export async function handleContentDelete(
 	db: Kysely<Database>,
 	collection: string,
 	id: string,
-): Promise<ApiResult<{ deleted: true }>> {
+): Promise<ApiResult<{ deleted: true; id: string }>> {
 	try {
-		const deleted = await withTransaction(db, async (trx) => {
+		const result = await withTransaction(db, async (trx) => {
 			const repo = new ContentRepository(trx);
 			const resolvedId = (await resolveId(repo, collection, id)) ?? id;
-			return repo.delete(collection, resolvedId);
+			return {
+				id: resolvedId,
+				deleted: await repo.delete(collection, resolvedId),
+			};
 		});
 
-		if (!deleted) {
+		if (!result.deleted) {
 			return {
 				success: false,
 				error: {
@@ -1082,7 +1168,7 @@ export async function handleContentDelete(
 
 		return {
 			success: true,
-			data: { deleted: true },
+			data: { deleted: true, id: result.id },
 		};
 	} catch (error) {
 		console.error("Content delete error:", error);
@@ -1145,7 +1231,7 @@ export async function handleContentPermanentDelete(
 	db: Kysely<Database>,
 	collection: string,
 	id: string,
-): Promise<ApiResult<{ deleted: true }>> {
+): Promise<ApiResult<{ deleted: true; id: string }>> {
 	try {
 		const repo = new ContentRepository(db);
 		const resolvedId = (await resolveIdIncludingTrashed(repo, collection, id)) ?? id;
@@ -1182,7 +1268,7 @@ export async function handleContentPermanentDelete(
 
 		return {
 			success: true,
-			data: { deleted: true },
+			data: { deleted: true, id: resolvedId },
 		};
 	} catch (error) {
 		console.error("Content permanent delete error:", error);
@@ -1428,11 +1514,36 @@ export async function handleContentPublish(
 			};
 		}
 		if (error instanceof EmDashValidationError) {
+			// The staged-slug pre-check tags its error so it maps to the same
+			// 409 SLUG_CONFLICT as direct slug edits in create/update.
+			const details: unknown = error.details;
+			const isSlugConflict =
+				typeof details === "object" &&
+				details !== null &&
+				"code" in details &&
+				details.code === "SLUG_CONFLICT";
 			return {
 				success: false,
 				error: {
-					code: "VALIDATION_ERROR",
+					code: isSlugConflict ? "SLUG_CONFLICT" : "VALIDATION_ERROR",
 					message: error.message,
+				},
+			};
+		}
+		// Backstop for the pre-check inside repo.publish(): a concurrent write
+		// can still take the slug between the check and the UPDATE, in which
+		// case the `(slug, locale)` unique constraint fires. Same fingerprint
+		// mapping as create/update — never a raw SQLite error to the client.
+		const message = error instanceof Error ? error.message.toLowerCase() : "";
+		if (
+			(message.includes("unique constraint failed") || message.includes("duplicate key")) &&
+			message.includes("slug")
+		) {
+			return {
+				success: false,
+				error: {
+					code: "SLUG_CONFLICT",
+					message: `The staged slug is already used by another entry in collection '${collection}'`,
 				},
 			};
 		}
@@ -1765,4 +1876,58 @@ async function syncNonTranslatableFields(
 		WHERE translation_group = ${translationGroup}
 		AND id != ${updatedItemId}
 	`.execute(trx);
+}
+
+/**
+ * Resolve a `{ taxonomyName: [slug, ...] }` map to term IDs and replace the
+ * entry's assignments for each named taxonomy.
+ *
+ * Shared by handleContentCreate and handleContentUpdate so both MCP entry
+ * points behave identically. Slug resolution is scoped to `locale`; passing
+ * `undefined` lets `findBySlug` fall back to its default (lowest locale code)
+ * so callers on single-locale sites don't need to know the site's default.
+ *
+ * Throws EmDashValidationError on unknown slug or wrong shape; the calling
+ * handler translates that into a VALIDATION_ERROR response.
+ */
+async function assignTaxonomies(
+	trx: Kysely<Database>,
+	collection: string,
+	entryId: string,
+	locale: string | undefined,
+	taxonomies: Record<string, string[]>,
+): Promise<void> {
+	const taxRepo = new TaxonomyRepository(trx);
+	let anyChange = false;
+
+	for (const [taxonomyName, slugs] of Object.entries(taxonomies)) {
+		if (!Array.isArray(slugs)) {
+			throw new EmDashValidationError(`taxonomies.${taxonomyName} must be an array of term slugs`);
+		}
+
+		const termIds: string[] = [];
+		for (const slug of slugs) {
+			if (typeof slug !== "string" || slug.length === 0) {
+				throw new EmDashValidationError(
+					`taxonomies.${taxonomyName} contains a non-string or empty slug`,
+				);
+			}
+			const term = await taxRepo.findBySlug(taxonomyName, slug, locale);
+			if (!term) {
+				throw new EmDashValidationError(
+					`Unknown taxonomy term: ${taxonomyName}='${slug}'${
+						locale ? ` (locale '${locale}')` : ""
+					}`,
+				);
+			}
+			termIds.push(term.id);
+		}
+
+		await taxRepo.setTermsForEntry(collection, entryId, taxonomyName, termIds);
+		anyChange = true;
+	}
+
+	// Match the REST route's behaviour: taxonomy term assignments changed,
+	// so invalidate the taxonomy object cache used during hydration.
+	if (anyChange) invalidateTermCache();
 }
