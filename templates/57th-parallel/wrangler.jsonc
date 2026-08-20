@@ -22,14 +22,7 @@
 			"remote": true,
 		},
 	],
-	// R2 bucket for media storage
-	"r2_buckets": [
-		{
-			"binding": "MEDIA",
-			"bucket_name": "emdash-media",
-			"remote": true,
-		},
-	],
+
 	// KV namespace for sessions (auto-provisioned on first deploy, pinned here)
 	"kv_namespaces": [
 		{
