@@ -39,12 +39,6 @@
 	],
 	// Observability
 	"observability": {
-		"enabled": true,
-	},
-	// Worker Loader for plugin sandboxing
-	"worker_loaders": [
-		{
-			"binding": "LOADER",
-		},
-	],
+		"enabled": true
+	}
 }

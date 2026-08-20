@@ -36,12 +36,10 @@ const formattedDate = date
 <article class="post-card">
 	<a href={href} class="card-link">
 		{
-			featuredImage ? (
+			featuredImage && (
 				<div class="card-image">
 					<Image image={featuredImage} />
 				</div>
-			) : (
-				<div class="card-placeholder" />
 			)
 		}
 		<div class="card-body">
